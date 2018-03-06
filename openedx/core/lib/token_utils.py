@@ -33,10 +33,11 @@ class JwtBuilder(object):
         self.user = user
         self.asymmetric = asymmetric
         self.secret = secret
-        self.jwt_auth = configuration_helpers.get_value('JWT_AUTH', settings.JWT_AUTH)
+        #self.jwt_auth = configuration_helpers.get_value('JWT_AUTH', settings.JWT_AUTH)
         if auth_type == 'oauth2':
             self.jwt_auth = configuration_helpers.get_value('JWT_AUTH_NEW', settings.JWT_AUTH_NEW)
-
+        else:
+            self.jwt_auth = configuration_helpers.get_value('JWT_AUTH', settings.JWT_AUTH)
     def build_token(self, scopes, expires_in=None, aud=None, additional_claims=None):
         """Returns a JWT access token.
 
