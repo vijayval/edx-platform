@@ -84,6 +84,14 @@ class _DispatchingView(View):
         else:
             return request.POST.get('client_id')
 
+    def get_auth_type(self, request):
+        """
+        Returns the appropriate adapter based on the OAuth client linked to the request.
+        """
+        if dot_models.Application.objects.filter(client_id=self._get_client_id(request)).exists():
+            return 'oauth2'
+        else:
+            return 'jwt'
 
 class AccessTokenView(RatelimitMixin, _DispatchingView):
     """
@@ -98,12 +106,12 @@ class AccessTokenView(RatelimitMixin, _DispatchingView):
 
     def dispatch(self, request, *args, **kwargs):
         response = super(AccessTokenView, self).dispatch(request, *args, **kwargs)
-
+        auth_type = self.get_auth_type(request)
         if response.status_code == 200 and request.POST.get('token_type', '').lower() == 'jwt':
             expires_in, scopes, user = self._decompose_access_token_response(request, response)
-
+        #auth_type = self.get_auth_type(request) 
             content = {
-                'access_token': JwtBuilder(user).build_token(scopes, expires_in),
+                'access_token': JwtBuilder(user, auth_type=auth_type).build_token(scopes, expires_in),
                 'expires_in': expires_in,
                 'token_type': 'JWT',
                 'scope': ' '.join(scopes),
