@@ -37,7 +37,7 @@ class RestrictedApplication(models.Model):
     # this field will be used to implement appropriate data filtering
     # so that clients of a specific OAuth2 Application will only be
     # able retrieve datasets that the OAuth2 Application is allowed to retrieve.
-    _org_associations = models.ForeignKey(Organization)
+    _org_associations = models.ForeignKey(Organization, default = '')
 
     def __unicode__(self):
         """

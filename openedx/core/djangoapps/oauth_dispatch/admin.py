@@ -75,12 +75,11 @@ class DOTGrantAdmin(ModelAdmin):
     search_fields = [u'code', u'user__username']
 
 
-#class RestrictedApplicationAdmin(ModelAdmin):
-#    """
-#    ModelAdmin for the Restricted Application
-#    """
-#    list_display = [u'application']
-#    filter_horizontal = ('_org_associations',)
+class RestrictedApplicationAdmin(ModelAdmin):
+    """
+    ModelAdmin for the Restricted Application
+    """
+    list_display = [u'application']
 
 
-#site.register(RestrictedApplication, RestrictedApplicationAdmin)
+site.register(RestrictedApplication, RestrictedApplicationAdmin)
