@@ -117,24 +117,16 @@ class RestrictedApplication(models.Model):
         """
         Translate space delimited string to a list
         """
-        org_objs = self._org_associations.all()
-        org_list = []
-        for each in org_objs:
-            org_list.append(each.__str__().split('(')[0].strip())
-        return org_list
+        
+        org_id = self._org_associations
 
-    @org_associations.setter
-    def org_associations(self, value):
-        """
-        Convert list to separated string
-        """
-        self._org_associations = _DEFAULT_SEPARATOR.join(value)
+        return Organization.objects.get(id=org_id).name
 
     def is_associated_with_org(self, org):
         """
         Returns if the RestriectedApplication is associated with the requested org
         """
-        return org in self.org_associations
+        return org == self.org_associations
 
     @classmethod
     def set_access_token_as_expired(cls, access_token):
