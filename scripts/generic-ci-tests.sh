@@ -54,6 +54,7 @@ set -e
 # or else no tests will be executed.
 SHARD=${SHARD:="all"}
 NUMBER_OF_BOKCHOY_THREADS=${NUMBER_OF_BOKCHOY_THREADS:=1}
+export LETTUCE_BROWSER='firefox'
 
 # Clean up previous builds
 git clean -qxfd
@@ -84,8 +85,8 @@ case "$TEST_SUITE" in
         paver run_eslint -l $ESLINT_THRESHOLD > eslint.log || { cat eslint.log; EXIT=1; }
         echo "Running code complexity report (python)."
         paver run_complexity > reports/code_complexity.log || echo "Unable to calculate code complexity. Ignoring error."
-        echo "Running safe template linter report."
-        paver run_safelint -t $SAFELINT_THRESHOLDS > safelint.log || { cat safelint.log; EXIT=1; }
+        # echo "Running safe template linter report."
+        # paver run_safelint -t $SAFELINT_THRESHOLDS > safelint.log || { cat safelint.log; EXIT=1; }
         echo "Running safe commit linter report."
         paver run_safecommit_report > safecommit.log || { cat safecommit.log; EXIT=1; }
         # Run quality task. Pass in the 'fail-under' percentage to diff-quality
@@ -165,8 +166,8 @@ case "$TEST_SUITE" in
         # Back compatibility support for firefox upgrade:
         # Copy newer firefox version to project root,
         # set that as the path for bok-choy to use.
-        cp -R $HOME/firefox/ firefox/
-        export SELENIUM_FIREFOX_PATH=firefox/firefox
+#         cp -R $HOME/firefox/ firefox/
+#         export SELENIUM_FIREFOX_PATH=firefox/firefox
 
         PAVER_ARGS="-n $NUMBER_OF_BOKCHOY_THREADS --with-flaky --with-xunit"
 

@@ -41,6 +41,7 @@ from provider.oauth2.models import Client
 from ratelimitbackend.exceptions import RateLimitException
 
 from social.apps.django_app import utils as social_utils
+from social.apps.django_app.default.models import UserSocialAuth
 from social.backends import oauth as social_oauth
 from social.exceptions import AuthException, AuthAlreadyAssociated
 
@@ -101,6 +102,7 @@ from util.milestones_helpers import (
 
 from util.password_policy_validators import validate_password_strength
 import third_party_auth
+from third_party_auth.models import UserSocialAuthMapping, OAuth2ProviderConfig
 from third_party_auth import pipeline, provider
 from student.helpers import (
     check_verify_status_by_course,
@@ -586,6 +588,23 @@ def dashboard(request):
 
     """
     user = request.user
+    if configuration_helpers.get_value("ENABLE_MSA_MIGRATION"):
+        is_redirection = False
+        try:
+            # Check to see user social entry for this user
+            social_user = UserSocialAuth.objects.get(user=user)
+            UserSocialAuthMapping.objects.get(uid=social_user.uid)
+        except UserSocialAuthMapping.DoesNotExist:
+            is_redirection = True
+        except Exception:
+            pass
+
+        if is_redirection:
+            external_login_api = configuration_helpers.get_value('external_login_api', '')
+            lms_root_url = configuration_helpers.get_value('LMS_ROOT_URL', settings.FEATURES.get('LMS_ROOT_URL', ''))
+            if external_login_api and lms_root_url:
+                external_redirect_url = ''.join([external_login_api, lms_root_url, request.path])
+                return redirect(external_redirect_url)
 
     platform_name = configuration_helpers.get_value("platform_name", settings.PLATFORM_NAME)
     enable_verified_certificates = configuration_helpers.get_value(
@@ -1073,6 +1092,10 @@ def change_enrollment(request, check_access=True):
     if not user.is_authenticated():
         return HttpResponseForbidden()
 
+    #If account is not activated do not let the user to enroll in a course and show the error message
+    if not user.is_active:
+        return HttpResponseBadRequest(_("This account has not been activated yet. Please first activate your account by clicking the link in the sent activation e-mail."))
+
     # Ensure we received a course_id
     action = request.POST.get("enrollment_action")
     if 'course_id' not in request.POST:
@@ -1167,6 +1190,7 @@ def login_user(request, error=""):  # pylint: disable=too-many-statements,unused
     backend_name = None
     email = None
     password = None
+    msa_migration_pipeline_status = None
     redirect_url = None
     response = None
     running_pipeline = None
@@ -1175,6 +1199,8 @@ def login_user(request, error=""):  # pylint: disable=too-many-statements,unused
     trumped_by_first_party_auth = bool(request.POST.get('email')) or bool(request.POST.get('password'))
     user = None
     platform_name = configuration_helpers.get_value("platform_name", settings.PLATFORM_NAME)
+
+    msa_migration_enabled = configuration_helpers.get_value("ENABLE_MSA_MIGRATION")
 
     if third_party_auth_requested and not trumped_by_first_party_auth:
         # The user has already authenticated via third-party auth and has not
@@ -1232,6 +1258,8 @@ def login_user(request, error=""):  # pylint: disable=too-many-statements,unused
 
         email = request.POST['email']
         password = request.POST['password']
+        if msa_migration_enabled:
+            msa_migration_pipeline_status = request.POST.get('msa_migration_pipeline_status', 'EMAIL_LOOKUP')
         try:
             user = User.objects.get(email=email)
         except User.DoesNotExist:
@@ -1257,6 +1285,28 @@ def login_user(request, error=""):  # pylint: disable=too-many-statements,unused
 
     # see if account has been locked out due to excessive login failures
     user_found_by_email_lookup = user
+
+    if msa_migration_enabled:
+        if msa_migration_pipeline_status in ('EMAIL_LOOKUP', 'REGISTER_NEW_USER'):
+            if user_found_by_email_lookup:
+                # User has already migrated to Microsoft account (MSA),
+                # redirect them through that flow.
+                meta = user_found_by_email_lookup.profile.get_meta()
+                if meta.get(settings.MSA_ACCOUNT_MIGRATION_STATUS_KEY) == settings.MSA_MIGRATION_STATUS_COMPLETED:
+                    msa_migration_pipeline_status = 'LOGIN_MIGRATED'
+                else:
+                    # User has not migrated to Microsoft account,
+                    # return successfully found user to show password field.
+                    msa_migration_pipeline_status = 'LOGIN_NOT_MIGRATED'
+            else:
+                # New user
+                msa_migration_pipeline_status = 'REGISTER_NEW_USER'
+
+            return JsonResponse({
+                "success": True,
+                "value": msa_migration_pipeline_status
+            })
+
     if user_found_by_email_lookup and LoginFailures.is_feature_enabled():
         if LoginFailures.is_user_locked_out(user_found_by_email_lookup):
             lockout_message = _('This account has been temporarily locked due '
@@ -1361,7 +1411,6 @@ def login_user(request, error=""):  # pylint: disable=too-many-statements,unused
             log.exception(exc)
             raise
 
-        redirect_url = None  # The AJAX method calling should know the default destination upon success
         if third_party_auth_successful:
             redirect_url = pipeline.get_complete_url(backend_name)
 
@@ -1592,7 +1641,7 @@ def _do_create_account(form, custom_form=None):
 
     profile_fields = [
         "name", "level_of_education", "gender", "mailing_address", "city", "country", "goals",
-        "year_of_birth"
+        "year_of_birth",
     ]
     profile = UserProfile(
         user=user,
@@ -1601,11 +1650,19 @@ def _do_create_account(form, custom_form=None):
     extended_profile = form.cleaned_extended_profile
     if extended_profile:
         profile.meta = json.dumps(extended_profile)
+    if configuration_helpers.get_value("ENABLE_MSA_MIGRATION"):
+        meta = profile.get_meta()
+        meta[settings.MSA_ACCOUNT_MIGRATION_STATUS_KEY] = settings.MSA_MIGRATION_STATUS_COMPLETED
+        profile.set_meta(meta)
     try:
         profile.save()
     except Exception:  # pylint: disable=broad-except
         log.exception("UserProfile creation failed for user {id}.".format(id=user.id))
         raise
+    # added to create the record in languageProficiency table
+    if form.cleaned_data.get("language"):
+        profile.language_proficiencies.create(code=form.cleaned_data.get("language"))
+        profile.save()
 
     return (user, profile, registration)
 
@@ -1680,7 +1737,9 @@ def create_account_with_params(request, params):
 
     extended_profile_fields = configuration_helpers.get_value('extended_profile_fields', [])
     enforce_password_policy = (
-        settings.FEATURES.get("ENFORCE_PASSWORD_POLICY", False) and
+        configuration_helpers.get_value(
+            "ENFORCE_PASSWORD_POLICY", settings.FEATURES.get("ENFORCE_PASSWORD_POLICY", False)
+        ) and
         not do_external_auth
     )
     # Can't have terms of service for certain SHIB users, like at Stanford
@@ -2214,10 +2273,10 @@ def password_reset(request):
         # bad user? tick the rate limiter counter
         AUDIT_LOG.info("Bad password_reset user passed in.")
         limiter.tick_bad_request_counter(request)
-
+    from_email = request.POST.get('email')
     return JsonResponse({
         'success': True,
-        'value': render_to_string('registration/password_reset_done.html', {}),
+        'value': render_to_string('registration/password_reset_done.html', {'email': from_email}),
     })
 
 
@@ -2254,7 +2313,11 @@ def validate_password(user, password):
     """
     err_msg = None
 
-    if settings.FEATURES.get('ENFORCE_PASSWORD_POLICY', False):
+    enforce_password_policy = configuration_helpers.get_value(
+        "ENFORCE_PASSWORD_POLICY", settings.FEATURES.get("ENFORCE_PASSWORD_POLICY", False)
+    )
+
+    if enforce_password_policy:
         try:
             validate_password_strength(password)
         except ValidationError as err:
@@ -2462,12 +2525,18 @@ def do_email_change_request(user, new_email, activation_key=None):
     # When the email address change is complete, a "edx.user.settings.changed" event will be emitted.
     # But because changing the email address is multi-step, we also emit an event here so that we can
     # track where the request was initiated.
+    old_email = context['old_email']
+    new_email = context['new_email']
+    if settings.FEATURES.get('SQUELCH_PII_IN_LOGS', False):
+        old_email = ''
+        new_email = ''
+
     tracker.emit(
         SETTING_CHANGE_INITIATED,
         {
             "setting": "email",
-            "old": context['old_email'],
-            "new": context['new_email'],
+            "old": old_email,
+            "new": new_email,
             "user_id": user.id,
         }
     )
@@ -2585,6 +2654,13 @@ def change_email_settings(request):
     return JsonResponse({"success": True})
 
 
+@login_required
+@ensure_csrf_cookie
+def disconnect_account_link(request):
+    html = "<html><body>disconnected</body></html>"
+    return HttpResponse(html)
+
+
 class LogoutView(TemplateView):
     """
     Logs out user and redirects.
@@ -2596,14 +2672,33 @@ class LogoutView(TemplateView):
     template_name = 'logout.html'
 
     # Keep track of the page to which the user should ultimately be redirected.
-    target = reverse_lazy('cas-logout') if settings.FEATURES.get('AUTH_USE_CAS') else '/'
+    target = reverse_lazy('cas-logout') if settings.FEATURES.get('AUTH_USE_CAS') else '/login'
 
     def dispatch(self, request, *args, **kwargs):  # pylint: disable=missing-docstring
+
+        # If this is from the MSA migration confirmation page,
+        # only log the user out of their Microsoft account
+        is_true = lambda value: bool(value) and value.lower() not in ('false', '0')
+        msa_only = is_true(request.GET.get('msa_only'))
+        auto_link = is_true(request.GET.get('auto_link'))
+        msa_registration = is_true(request.GET.get('msa_registration'))
+        msa_migration_enabled = configuration_helpers.get_value("ENABLE_MSA_MIGRATION")
+
+        if msa_only and third_party_auth.is_enabled() and msa_migration_enabled:
+            return self._do_microsoft_account_logout(request, msa_only=msa_only, auto_link=auto_link)
+
         # We do not log here, because we have a handler registered to perform logging on successful logouts.
         request.is_from_logout = True
 
         # Get the list of authorized clients before we clear the session.
         self.oauth_client_ids = request.session.get(edx_oauth2_provider.constants.AUTHORIZED_CLIENTS_SESSION_KEY, [])
+
+        try:
+            requesting_user = User.objects.get(username=request.user.username)
+            meta = requesting_user.profile.get_meta()
+            user_has_started_migration = msa_migration_enabled and meta.get(settings.MSA_ACCOUNT_MIGRATION_STATUS_KEY)
+        except User.DoesNotExist:
+            user_has_started_migration = msa_registration
 
         logout(request)
 
@@ -2615,6 +2710,10 @@ class LogoutView(TemplateView):
 
         # Clear the cookie used by the edx.org marketing site
         delete_logged_in_cookies(response)
+
+        if third_party_auth.is_enabled() and msa_migration_enabled and user_has_started_migration:
+            # If this was a normal logout request, also log the user out of their Microsoft Account
+            return self._do_microsoft_account_logout(request)
 
         return response
 
@@ -2633,6 +2732,34 @@ class LogoutView(TemplateView):
         query_params['no_redirect'] = 1
         new_query_string = urlencode(query_params, doseq=True)
         return urlunsplit((scheme, netloc, path, new_query_string, fragment))
+
+    def _do_microsoft_account_logout(self, request, msa_only=False, auto_link=False):
+        """
+        Log the user out of Microsoft Account. Only applicable during MSA_MIGRATION
+
+        Args:
+            request: Logout request object
+            msa_only:
+                Whether to only log the user out of their Microsoft Account
+                or to do a full logout
+
+        Returns:
+            HttpResponseRedirect
+        """
+        provider = OAuth2ProviderConfig.current("live")
+        client_id = provider.get_setting("KEY")
+        lms_root_url = configuration_helpers.get_value('LMS_ROOT_URL')
+
+        if msa_only:
+            redirect_url = '{}/account/link'.format(lms_root_url)
+            if auto_link:
+                redirect_url += '?{}'.format(urlencode({'auto': True}))
+        else:
+            redirect_url = lms_root_url
+            next_url = request.GET.get('next')
+            if next_url:
+                redirect_url = urljoin(redirect_url, next_url)
+        return redirect("https://login.live.com/oauth20_logout.srf?client_id={}&redirect_uri={}".format(client_id, redirect_url))
 
     def get_context_data(self, **kwargs):
         context = super(LogoutView, self).get_context_data(**kwargs)

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Tests for tracking middleware."""
 import ddt
+import json
 from mock import patch
 from mock import sentinel
 
@@ -31,6 +32,39 @@ class TrackMiddlewareTestCase(TestCase):
         request = self.request_factory.get('/somewhere')
         self.track_middleware.process_request(request)
         self.assertTrue(self.mock_server_track.called)
+
+    @ddt.data(
+        'email',
+        'name',
+    )
+    @override_settings(FEATURES={'SQUELCH_PII_IN_LOGS': True})
+    def test_normal_request_without_personal_data(self, pii_tag):
+        request = self.request_factory.get('/somewhere')
+
+        '''add pii tags/values to post/get query'''
+        post_copy = request.POST.copy()
+        post_copy[pii_tag] = 'piihere'
+        request.POST = post_copy
+
+        get_copy = request.GET.copy()
+        get_copy[pii_tag] = 'piihere'
+        request.GET = get_copy
+
+        '''prepare the expected event'''
+        post_dict = dict(request.POST)
+        get_dict = dict(request.GET)
+        post_dict[pii_tag] = ''
+        get_dict[pii_tag] = ''
+
+        event = {
+            'GET': dict(get_dict),
+            'POST': dict(post_dict),
+        }
+        event = json.dumps(event)
+        event = event[:512]
+
+        self.track_middleware.process_request(request)
+        self.mock_server_track.assert_called_with(request, request.META['PATH_INFO'], event)
 
     @ddt.unpack
     @ddt.data(
@@ -85,6 +119,24 @@ class TrackMiddlewareTestCase(TestCase):
             'session': '',
             'username': '',
             'ip': '127.0.0.1',
+            'host': 'testserver',
+            'agent': '',
+            'path': '/courses/',
+            'org_id': '',
+            'course_id': '',
+            'client_id': None,
+        })
+
+    @override_settings(FEATURES={'SQUELCH_PII_IN_LOGS': True})
+    def test_default_request_context_without_personal_data(self):
+        context = self.get_context_for_path('/courses/')
+        self.assertEquals(context, {
+            'accept_language': '',
+            'referer': '',
+            'user_id': '',
+            'session': '',
+            'username': '',
+            'ip': '127.0.x.x',
             'host': 'testserver',
             'agent': '',
             'path': '/courses/',

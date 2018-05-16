@@ -3,6 +3,8 @@
 import logging
 import json
 import urlparse
+import requests
+
 from datetime import datetime
 
 from django.conf import settings
@@ -11,7 +13,7 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth import get_user_model
 from django.core.urlresolvers import reverse, resolve
 from django.http import (
-    HttpResponse, HttpResponseBadRequest, HttpResponseForbidden, HttpRequest
+    HttpResponse, HttpResponseBadRequest, HttpResponseForbidden, HttpRequest, JsonResponse
 )
 from django.shortcuts import redirect
 from django.utils.translation import ugettext as _
@@ -48,6 +50,7 @@ from third_party_auth.decorators import xframe_allow_whitelisted
 from util.bad_request_rate_limiter import BadRequestRateLimiter
 from util.date_utils import strftime_localized
 from util.enterprise_helpers import set_enterprise_branding_filter_param
+from social.apps.django_app.default.models import UserSocialAuth
 
 AUDIT_LOG = logging.getLogger("audit")
 log = logging.getLogger(__name__)
@@ -107,15 +110,22 @@ def login_and_registration_form(request, initial_mode="login"):
     if ext_auth_response is not None:
         return ext_auth_response
 
+    third_party_auth_context = _third_party_auth_context(request, redirect_to, initial_mode)
+    if isinstance(third_party_auth_context, HttpResponse):
+        return third_party_auth_context
+
+    enable_msa_migration = configuration_helpers.get_value("ENABLE_MSA_MIGRATION")
+
     # Otherwise, render the combined login/registration page
     context = {
         'data': {
             'login_redirect_url': redirect_to,
             'initial_mode': initial_mode,
-            'third_party_auth': _third_party_auth_context(request, redirect_to),
+            'third_party_auth': third_party_auth_context,
             'third_party_auth_hint': third_party_auth_hint or '',
             'platform_name': configuration_helpers.get_value('PLATFORM_NAME', settings.PLATFORM_NAME),
             'support_link': configuration_helpers.get_value('SUPPORT_SITE_LINK', settings.SUPPORT_SITE_LINK),
+            'enable_msa_migration': enable_msa_migration,
 
             # Include form descriptions retrieved from the user API.
             # We could have the JS client make these requests directly,
@@ -132,7 +142,7 @@ def login_and_registration_form(request, initial_mode="login"):
         'disable_footer': not configuration_helpers.get_value(
             'ENABLE_COMBINED_LOGIN_REGISTRATION_FOOTER',
             settings.FEATURES['ENABLE_COMBINED_LOGIN_REGISTRATION_FOOTER']
-        ),
+        )
     }
 
     return render_to_response('student_account/login_and_register.html', context)
@@ -188,7 +198,7 @@ def password_change_request_handler(request):
         return HttpResponseBadRequest(_("No email address provided."))
 
 
-def _third_party_auth_context(request, redirect_to):
+def _third_party_auth_context(request, redirect_to, initial_mode):
     """Context for third party auth providers and the currently running pipeline.
 
     Arguments:
@@ -230,6 +240,20 @@ def _third_party_auth_context(request, redirect_to):
             context["providers" if not enabled.secondary else "secondaryProviders"].append(info)
 
         running_pipeline = pipeline.get(request)
+        auto_register_provider = configuration_helpers.get_value(
+            'THIRD_PARTY_AUTH_AUTO_REGISTER_WITH_OAUTH_PROVIDER',
+            settings.FEATURES.get('THIRD_PARTY_AUTH_AUTO_REGISTER_WITH_OAUTH_PROVIDER', None)
+        )
+        if auto_register_provider and not running_pipeline:
+            auto_register_url = None
+            for provider in context["providers"]:
+                auto_register_provider_id = 'oa2-{}'.format(auto_register_provider)
+                if provider["id"] == auto_register_provider_id:
+                    key = "{}Url".format(initial_mode)
+                    auto_register_url = provider[key]
+            if auto_register_url is not None:
+                return redirect(auto_register_url)
+
         if running_pipeline is not None:
             current_provider = third_party_auth.provider.Registry.get_from_pipeline(running_pipeline)
 
@@ -419,6 +443,54 @@ def finish_auth(request):  # pylint: disable=unused-argument
     })
 
 
+@login_required
+@ensure_csrf_cookie
+def link_account(request):
+
+    auto_link = request.GET.get('auto', False)
+    user = request.user
+    redirect_response = _redirect_if_migration_complete(user)
+    if redirect_response:
+        return redirect_response
+
+    context = {
+        'auth': {},
+        'duplicate_provider': None,
+        'platform_name': configuration_helpers.get_value('PLATFORM_NAME', settings.PLATFORM_NAME),
+        'user_name': user.profile.name or user.username,
+        'enable_account_linking': True
+    }
+
+    if third_party_auth.is_enabled():
+        duplicate_provider = [m.message for m in messages.get_messages(request)]
+        if len(duplicate_provider) > 0:
+            context['duplicate_provider'] = 'This Microsoft account is already in use by a different account.'
+
+        auth_states = pipeline.get_provider_user_states(user)
+        context['auth']['providers'] = [{
+            'id': state.provider.provider_id,
+            'name': state.provider.name,  # The name of the provider e.g. Facebook
+            'connected': state.has_account,  # Whether the user's edX account is connected with the provider.
+            # If the user is not connected, they should be directed to this page to authenticate
+            # with the particular provider, as long as the provider supports initiating a login.
+            'connect_url': pipeline.get_login_url(
+                state.provider.provider_id,
+                pipeline.AUTH_ENTRY_ACCOUNT_SETTINGS,
+                # The url the user should be directed to after the auth process has completed.
+                redirect_url=reverse('link_account_confirm'),
+            ),
+            'accepts_logins': state.provider.accepts_logins,
+            # If the user is connected, sending a POST request to this url removes the connection
+            # information for this provider from their edX account.
+        } for state in auth_states if state.provider.display_for_login or state.has_account]
+
+        _update_microsoft_account_migration_status(user, settings.MSA_MIGRATION_STATUS_NOT_STARTED)
+        if auto_link:
+            return redirect(context['auth']['providers'][0]['connect_url'])
+
+    return render_to_response("student_account/link_account.html", context)
+
+
 def account_settings_context(request):
     """ Context for the account settings page.
 
@@ -458,12 +530,13 @@ def account_settings_context(request):
             }, 'year_of_birth': {
                 'options': year_of_birth_options,
             }, 'preferred_language': {
-                'options': all_languages(),
+                'options': [(choice[0], (choice[1])) for choice in settings.ALL_LANGUAGES_DICT.items()],
             }, 'time_zone': {
                 'options': TIME_ZONE_CHOICES,
             }
         },
         'platform_name': configuration_helpers.get_value('PLATFORM_NAME', settings.PLATFORM_NAME),
+        'msa_migration_enabled': configuration_helpers.get_value('ENABLE_MSA_MIGRATION', False),
         'user_accounts_api_url': reverse("accounts_api", kwargs={'username': user.username}),
         'user_preferences_api_url': reverse('preferences_api', kwargs={'username': user.username}),
         'disable_courseware_js': True,
@@ -499,3 +572,95 @@ def account_settings_context(request):
         } for state in auth_states if state.provider.display_for_login or state.has_account]
 
     return context
+
+
+@login_required
+@ensure_csrf_cookie
+def link_account_confirm(request):
+    user = request.user
+    redirect_response = _redirect_if_migration_complete(user)
+    if redirect_response:
+        return redirect_response
+
+    auth_states = pipeline.get_provider_user_states(user)
+    live_auth_state = [{
+        'provider_id': state.provider.provider_id,
+        'association_id': state.association_id,
+    } for state in auth_states if state.provider.provider_id == 'oa2-live' and state.provider.display_for_login]
+    disconnect_url = '/auth/disconnect/live/?'
+    if len(live_auth_state) > 0:
+        disconnect_url = pipeline.get_disconnect_url(
+            live_auth_state[0].get('provider_id'), live_auth_state[0].get('association_id')
+        )
+
+    social_user = UserSocialAuth.objects.get(user=user)
+    first_name = social_user.extra_data.get('first_name')
+    last_name = social_user.extra_data.get('last_name')
+    email = social_user.extra_data.get('email') or social_user.uid
+    if first_name and last_name:
+        new_full_name = ' '.join([first_name, last_name])
+    else:
+        new_full_name = user.profile.name
+
+    user_data = {'force_email_update': True}
+    if new_full_name != user.profile.name:
+        user_data['name'] = new_full_name
+    if email != user.email:
+        user_data['email'] = email
+    context = {
+        'user_data': user_data,
+        'new_email': email,
+        'new_full_name': new_full_name,
+        'redirect_to': reverse('dashboard'),
+        'disconnect_url': disconnect_url,
+        'user_accounts_api_url': reverse("accounts_api", kwargs={'username': user.username}),
+        'enable_account_linking': True
+    }
+    _update_microsoft_account_migration_status(user, settings.MSA_MIGRATION_STATUS_STARTED_NOT_CONFIRMED)
+    return render_to_response("student_account/link_account_confirm.html", context)
+
+
+def cookies_api(request):
+    """Getting the common API URL from the settings page
+       If the URL is not None or not empty then returning the response
+       Replacing the locale with the user locale value in the API URL
+    """
+    if settings.API_COOKIE_URL is not None or settings.API_COOKIE_URL != "":
+        try:
+            locale_var = request.LANGUAGE_CODE
+            end_point = settings.API_COOKIE_URL
+            parse_url = urlparse.urlparse(end_point)
+            i = parse_url.path.index('/', 1)
+            updated_path = '/' + locale_var + '/' + parse_url.path[1 + i:]
+            addr = urlparse.urlunparse((parse_url.scheme, parse_url.netloc, updated_path, parse_url.params, parse_url.query, parse_url.fragment))
+            response = requests.get(addr)
+            return JsonResponse(json.loads(response.content))
+
+        except:
+            log.info('Failed in calling cookies api {}'.format(settings.API_COOKIE_URL))
+            return HttpResponseBadRequest()
+
+
+def _redirect_if_migration_complete(user):
+    """ If user has migrated to Microsoft Account already, don't allow them
+        to view the account migration pages anymore, redirect to dashboard
+    """
+    meta = user.profile.get_meta()
+    if meta.get(settings.MSA_ACCOUNT_MIGRATION_STATUS_KEY) == settings.MSA_MIGRATION_STATUS_COMPLETED:
+        return redirect(reverse('dashboard'))
+
+
+def _update_microsoft_account_migration_status(user, migration_status):
+    """ Update the MSA_ACCOUNT_MIGRATION_STATUS_KEY property for the user's profile
+        meta field to the given migration status.
+    """
+    profile = user.profile
+    if configuration_helpers.get_value("ENABLE_MSA_MIGRATION"):
+        meta = profile.get_meta()
+        meta[settings.MSA_ACCOUNT_MIGRATION_STATUS_KEY] = migration_status
+        profile.set_meta(meta)
+    try:
+        profile.save()
+    except Exception:  # pylint: disable=broad-except
+        log.exception("UserProfile creation failed for user {id}.".format(id=user.id))
+        raise
