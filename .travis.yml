@@ -25,6 +25,7 @@ branches:
   - oxa/release.fic
   - oxa/dev.fic
   - oxa/ci
+  - mani_t2
 
 before_install:
   # Login and fetch container from Azure container registry
