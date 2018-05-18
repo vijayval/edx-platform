@@ -109,7 +109,6 @@ class EdxOAuth2Validator(OAuth2Validator):
 
         super(EdxOAuth2Validator, self).save_bearer_token(token, request, *args, **kwargs)
 
-        #is_application_restricted = OauthRestrictedApplication.objects.filter(application=request.client).exists()
         if not is_oauth_scope_enforcement_enabled():
             # Since RestrictedApplications will override the DOT defined expiry, so that access_tokens
             # are always expired, we need to re-read the token from the database and then calculate the
