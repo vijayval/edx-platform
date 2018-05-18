@@ -1073,6 +1073,10 @@ def change_enrollment(request, check_access=True):
     if not user.is_authenticated():
         return HttpResponseForbidden()
 
+    #If account is not activated do not let the user to enroll in a course and show the error message
+    if not user.is_active:
+        return HttpResponseBadRequest(_("This account has not been activated yet. Please first activate your account by clicking the link in the sent activation e-mail."))
+
     # Ensure we received a course_id
     action = request.POST.get("enrollment_action")
     if 'course_id' not in request.POST:
@@ -1592,7 +1596,7 @@ def _do_create_account(form, custom_form=None):
 
     profile_fields = [
         "name", "level_of_education", "gender", "mailing_address", "city", "country", "goals",
-        "year_of_birth"
+        "year_of_birth",
     ]
     profile = UserProfile(
         user=user,
@@ -1606,6 +1610,10 @@ def _do_create_account(form, custom_form=None):
     except Exception:  # pylint: disable=broad-except
         log.exception("UserProfile creation failed for user {id}.".format(id=user.id))
         raise
+    # added to create the record in languageProficiency table
+    if form.cleaned_data.get("language"):
+        profile.language_proficiencies.create(code=form.cleaned_data.get("language"))
+        profile.save()
 
     return (user, profile, registration)
 
@@ -1680,7 +1688,9 @@ def create_account_with_params(request, params):
 
     extended_profile_fields = configuration_helpers.get_value('extended_profile_fields', [])
     enforce_password_policy = (
-        settings.FEATURES.get("ENFORCE_PASSWORD_POLICY", False) and
+        configuration_helpers.get_value(
+            "ENFORCE_PASSWORD_POLICY", settings.FEATURES.get("ENFORCE_PASSWORD_POLICY", False)
+        ) and
         not do_external_auth
     )
     # Can't have terms of service for certain SHIB users, like at Stanford
@@ -2214,10 +2224,10 @@ def password_reset(request):
         # bad user? tick the rate limiter counter
         AUDIT_LOG.info("Bad password_reset user passed in.")
         limiter.tick_bad_request_counter(request)
-
+    from_email = request.POST.get('email')
     return JsonResponse({
         'success': True,
-        'value': render_to_string('registration/password_reset_done.html', {}),
+        'value': render_to_string('registration/password_reset_done.html', {'email': from_email}),
     })
 
 
@@ -2254,7 +2264,11 @@ def validate_password(user, password):
     """
     err_msg = None
 
-    if settings.FEATURES.get('ENFORCE_PASSWORD_POLICY', False):
+    enforce_password_policy = configuration_helpers.get_value(
+        "ENFORCE_PASSWORD_POLICY", settings.FEATURES.get("ENFORCE_PASSWORD_POLICY", False)
+    )
+
+    if enforce_password_policy:
         try:
             validate_password_strength(password)
         except ValidationError as err:
@@ -2596,7 +2610,7 @@ class LogoutView(TemplateView):
     template_name = 'logout.html'
 
     # Keep track of the page to which the user should ultimately be redirected.
-    target = reverse_lazy('cas-logout') if settings.FEATURES.get('AUTH_USE_CAS') else '/'
+    target = reverse_lazy('cas-logout') if settings.FEATURES.get('AUTH_USE_CAS') else '/login'
 
     def dispatch(self, request, *args, **kwargs):  # pylint: disable=missing-docstring
         # We do not log here, because we have a handler registered to perform logging on successful logouts.

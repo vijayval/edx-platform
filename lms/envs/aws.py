@@ -29,6 +29,9 @@ import os
 from path import Path as path
 from xmodule.modulestore.modulestore_settings import convert_module_store_setting_if_needed
 
+from collections import OrderedDict
+from operator import itemgetter
+
 # SERVICE_VARIANT specifies name of the variant used, which decides what JSON
 # configuration files are read during startup.
 SERVICE_VARIANT = os.environ.get('SERVICE_VARIANT', None)
@@ -501,6 +504,13 @@ if AWS_SECRET_ACCESS_KEY == "":
 
 AWS_STORAGE_BUCKET_NAME = AUTH_TOKENS.get('AWS_STORAGE_BUCKET_NAME', 'edxuploads')
 
+#
+# To support Azure Storage via the Django-Storages library
+#
+AZURE_ACCOUNT_NAME = AUTH_TOKENS.get('AZURE_ACCOUNT_NAME', None)
+AZURE_ACCOUNT_KEY = AUTH_TOKENS.get('AZURE_ACCOUNT_KEY', None)
+AZURE_CONTAINER = AUTH_TOKENS.get('AZURE_CONTAINER', None)
+
 # Disabling querystring auth instructs Boto to exclude the querystring parameters (e.g. signature, access key) it
 # normally appends to every returned URL.
 AWS_QUERYSTRING_AUTH = AUTH_TOKENS.get('AWS_QUERYSTRING_AUTH', True)
@@ -510,6 +520,8 @@ if AUTH_TOKENS.get('DEFAULT_FILE_STORAGE'):
     DEFAULT_FILE_STORAGE = AUTH_TOKENS.get('DEFAULT_FILE_STORAGE')
 elif AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY:
     DEFAULT_FILE_STORAGE = 'storages.backends.s3boto.S3BotoStorage'
+elif AZURE_ACCOUNT_NAME and AZURE_ACCOUNT_KEY and AZURE_CONTAINER:
+    DEFAULT_FILE_STORAGE = 'openedx.core.storage.AzureStorageExtended'
 else:
     DEFAULT_FILE_STORAGE = 'django.core.files.storage.FileSystemStorage'
 
@@ -656,6 +668,7 @@ if FEATURES.get('ENABLE_THIRD_PARTY_AUTH'):
             'social.backends.linkedin.LinkedinOAuth2',
             'social.backends.facebook.FacebookOAuth2',
             'social.backends.azuread.AzureADOAuth2',
+            'social.backends.live.LiveOAuth2',
             'third_party_auth.saml.SAMLAuthBackend',
             'third_party_auth.lti.LTIAuthBackend',
         ]) + list(AUTHENTICATION_BACKENDS)
@@ -893,3 +906,24 @@ DOC_LINK_BASE_URL = ENV_TOKENS.get('DOC_LINK_BASE_URL', DOC_LINK_BASE_URL)
 ############## Settings for the Enterprise App ######################
 
 ENTERPRISE_ENROLLMENT_API_URL = ENV_TOKENS.get('ENTERPRISE_ENROLLMENT_API_URL', ENTERPRISE_ENROLLMENT_API_URL)
+# django-countries overrides
+_COUNTRIES_OVERRIDE = ENV_TOKENS.get('COUNTRIES_OVERRIDE', None)
+if _COUNTRIES_OVERRIDE:
+    COUNTRIES_OVERRIDE = _COUNTRIES_OVERRIDE
+
+# all-languages overrides, here if the language is null we remove the language from the language dictionary
+#otherwise if we are adding the new language code or existing code ,it should be added to the ALL_LANGUAGE_DUPLICATE which will be
+#validated, when adding into the language proficiency table and then adding the language to ALL_LANGUAGES_DICT dictionary.
+ALL_LANGUAGES_OVERRIDE = ENV_TOKENS.get('ALL_LANGUAGES_OVERRIDE', None)
+if ALL_LANGUAGES_OVERRIDE:
+    for code, language in ALL_LANGUAGES_OVERRIDE.iteritems():
+        if language is None or language == "null":
+            ALL_LANGUAGES_DICT.pop(code, None)
+        elif code not in ALL_LANGUAGES_DICT:
+            ALL_LANGUAGES_DUPLICATE = ALL_LANGUAGES_DUPLICATE + ([code, language],)
+            ALL_LANGUAGES_DICT[code] = language
+        else:
+            ALL_LANGUAGES_DICT[code] = language
+    ALL_LANGUAGES_DICT = OrderedDict(sorted(ALL_LANGUAGES_DICT.items(), key=itemgetter(1)))
+
+API_COOKIE_URL = ENV_TOKENS.get('API_COOKIE_URL', None)
