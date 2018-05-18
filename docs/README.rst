@@ -5,6 +5,7 @@ EdX Documentation
 The following documentation projects have been moved to the `edx-documentation`_ repository as of November 3, 2014:
 
 * course_authors
+
 * data
 * developers
 * install_operations
