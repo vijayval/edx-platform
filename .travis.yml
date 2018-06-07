@@ -45,8 +45,6 @@ before_script:
   - "export DISPLAY=:99.0"
   - "sh -e /etc/init.d/xvfb start"
   - sleep 3
-  - chmod +x ./scripts/docker-run-tests.sh
-  - chmod +x ./scripts/docker-report.sh
   
 script: 
   - ./scripts/docker-run-tests.sh
