@@ -764,7 +764,27 @@ EVENT_TRACKING_BACKENDS = {
                 },
                 {
                     'ENGINE': 'track.shim.GoogleAnalyticsProcessor'
+                },
+    'kafka': {
+        'ENGINE': 'eventtracking.backends.routing.RoutingBackend',
+        'OPTIONS': {
+            'backends': {
+                'kafka': {'ENGINE': 'eventtracking.backends.kafka.KafkaBackend'}
+            },
+            'processors': [
+                {
+                    'ENGINE': 'eventtracking.processors.whitelist.NameWhitelistProcessor',
+                    'OPTIONS': {
+                        'whitelist': []
+                    }
+                },
+                {
+                    'ENGINE': 'track.shim.GoogleAnalyticsProcessor'
                 }
+            ]
+        }
+    }
+ 
             ]
         }
     }
