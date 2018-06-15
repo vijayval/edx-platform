@@ -31,6 +31,7 @@ doCheckVars
 
 # Run appropriate CI system script
 if [ -n "$SCRIPT_TO_RUN" ] ; then
+    echo $SCRIPT_TO_RUN
     $SCRIPT_TO_RUN
 
     # Exit with the exit code of the called script
