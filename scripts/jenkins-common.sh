@@ -63,4 +63,4 @@ SHARD_NUM=${SHARD:="all"}
 export PAVER_TIMER_LOG="test_root/log/timing.paver.$TEST_SUITE.$SHARD_NUM.log"
 export ANSIBLE_TIMER_LOG="test_root/log/timing.ansible.$TIMESTAMP.log"
 
-echo "This node is `curl http://hawthronmaster.westus.cloudapp.azure.com/latest/meta-data/hostname`"
+# echo "This node is `curl http://hawthronmaster.westus.cloudapp.azure.com/latest/meta-data/hostname`"
