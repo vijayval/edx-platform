@@ -149,7 +149,7 @@ echo $TEST_SUITE
         case "$SHARD" in
             "all"|[1-4]|"noshard")
             echo "Test_Suite" $TEST_SUITE
-            echo"SHARD" $SHARD
+            echo "SHARD" $SHARD
             
                 $TOX bash scripts/unit-tests.sh
                 ;;
