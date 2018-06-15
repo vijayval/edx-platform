@@ -100,7 +100,8 @@ function run_paver_quality {
 case "$TEST_SUITE" in
 
     "quality")
-
+echo "Test_Suite"
+echo $TEST_SUITE
         mkdir -p reports
 
         case "$SHARD" in
